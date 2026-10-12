@@ -16,6 +16,9 @@ export interface Paths {
   userSettings: string;
   projectSettings: string;
   localSettings: string;
+  /** Platform-wide Claude Code policy files. */
+  managedMcp: string;
+  managedSettings: string;
 }
 
 export interface LoadOptions {
@@ -23,6 +26,19 @@ export interface LoadOptions {
   home: string;
   env: Environment;
   platform?: NodeJS.Platform;
+  /** Test/deployment override for the platform-wide ClaudeCode directory. */
+  managedConfigDir?: string;
+}
+
+function managedConfigDir(platform: NodeJS.Platform): string {
+  switch (platform) {
+    case 'win32':
+      return path.win32.join('C:\\Program Files', 'ClaudeCode');
+    case 'darwin':
+      return path.posix.join('/Library/Application Support', 'ClaudeCode');
+    default:
+      return path.posix.join('/etc', 'claude-code');
+  }
 }
 
 export function resolvePaths(opts: LoadOptions): Paths {
@@ -37,7 +53,10 @@ export function resolvePaths(opts: LoadOptions): Paths {
     const candidate = path.join(configDir, '.claude.json');
     if (existsSync(candidate)) claudeJson = candidate;
   }
-  const ctx = { cwd, home, configDir, platform: opts.platform ?? process.platform };
+  const platform = opts.platform ?? process.platform;
+  const ctx = { cwd, home, configDir, platform };
+  const managedDir = opts.managedConfigDir ? path.resolve(opts.managedConfigDir) : managedConfigDir(platform);
+  const joinManaged = opts.managedConfigDir ? path.join : platform === 'win32' ? path.win32.join : path.posix.join;
   return {
     cwd,
     home,
@@ -47,6 +66,8 @@ export function resolvePaths(opts: LoadOptions): Paths {
     userSettings: settingsPathFor('user', ctx),
     projectSettings: settingsPathFor('project', ctx),
     localSettings: settingsPathFor('local', ctx),
+    managedMcp: joinManaged(managedDir, 'managed-mcp.json'),
+    managedSettings: joinManaged(managedDir, 'managed-settings.json'),
   };
 }
 
@@ -224,8 +245,8 @@ function projectKeys(cwd: string): string[] {
 
 /**
  * Load every MCP server definition Claude Code would read for `cwd`, apply the
- * documented precedence (local, project, user, plugin; managed servers are not
- * read) and record where each one came from.
+ * documented precedence (managed, local, project, user, plugin) and record
+ * where each one came from.
  */
 export function loadServers(opts: LoadOptions): LoadResult {
   const paths = resolvePaths(opts);
@@ -234,6 +255,20 @@ export function loadServers(opts: LoadOptions): LoadResult {
   const settings = readSettingsSummary(paths, warnings);
   const claudeJson = readJsonFile(paths.claudeJson, warnings) ?? {};
   const candidates: Candidate[] = [];
+
+  // A mocked platform is useful for path tests, but its system root does not
+  // belong to the host running this process. Only read it when the platform is
+  // real, or when the caller supplied an explicit managed directory.
+  const readManaged = opts.managedConfigDir !== undefined || opts.platform === undefined || opts.platform === process.platform;
+  const managedMcp = readManaged ? readJsonFile(paths.managedMcp, warnings) : undefined;
+  for (const [name, raw] of Object.entries(asServerMap(managedMcp?.mcpServers))) {
+    candidates.push({ name, origin: 'managed', source: paths.managedMcp, raw, extra: {} });
+  }
+
+  const managedSettings = readManaged ? readJsonFile(paths.managedSettings, warnings) : undefined;
+  for (const [name, raw] of Object.entries(asServerMap(managedSettings?.managedMcpServers))) {
+    candidates.push({ name, origin: 'managed', source: paths.managedSettings, raw, extra: {} });
+  }
 
   const projects = claudeJson.projects;
   if (projects && typeof projects === 'object') {
@@ -271,7 +306,7 @@ export function loadServers(opts: LoadOptions): LoadResult {
 
   for (const c of candidates) {
     const ruleServer = c.plugin ? pluginRuleServer(c.plugin.name, c.name) : c.name;
-    if (c.origin !== 'plugin' && settings.disabledMcpServers.has(c.name)) {
+    if (c.origin !== 'plugin' && c.origin !== 'managed' && settings.disabledMcpServers.has(c.name)) {
       skipped.push({ name: c.name, ruleServer, origin: c.origin, source: c.source, reason: 'listed in disabledMcpServers' });
       continue;
     }
