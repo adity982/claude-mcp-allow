@@ -171,14 +171,20 @@ interface Candidate {
 function containsInterpolation(value: unknown): boolean {
   if (typeof value === 'string') return /\$\{[^}]+\}/.test(value);
   if (Array.isArray(value)) return value.some(containsInterpolation);
-  if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>).some(containsInterpolation);
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>).some(([key, entry]) => containsInterpolation(key) || containsInterpolation(entry));
+  }
   return false;
 }
 
-function managedSettingsConfig(name: string, raw: RawServerConfig): { config?: RawServerConfig; reason?: string } {
+function managedSettingsConfig(name: string, value: unknown): { config?: RawServerConfig; reason?: string } {
   if (!/^[A-Za-z0-9_-]+$/.test(name)) {
     return { reason: 'managedMcpServers names may contain only letters, numbers, hyphens and underscores' };
   }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { reason: 'managedMcpServers entries must be JSON objects' };
+  }
+  const raw = value as RawServerConfig;
   for (const key of ['command', 'args', 'env', 'headersHelper']) {
     if (key in raw) return { reason: `managedMcpServers entries may not define ${key}` };
   }
@@ -315,8 +321,12 @@ export function loadServers(opts: LoadOptions): LoadResult {
   }
 
   const managedSettings = readManaged ? readJsonFile(paths.managedSettings, warnings) : undefined;
-  for (const [name, raw] of Object.entries(asServerMap(managedSettings?.managedMcpServers))) {
-    const { config, reason } = managedSettingsConfig(name, raw);
+  const managedSettingsServers = managedSettings?.managedMcpServers;
+  const managedSettingsEntries = managedSettingsServers && typeof managedSettingsServers === 'object' && !Array.isArray(managedSettingsServers)
+    ? Object.entries(managedSettingsServers as Record<string, unknown>)
+    : [];
+  for (const [name, value] of managedSettingsEntries) {
+    const { config, reason } = managedSettingsConfig(name, value);
     if (!config) {
       skipped.push({ name, ruleServer: name, origin: 'managed', source: paths.managedSettings, reason: reason! });
       continue;

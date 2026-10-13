@@ -180,6 +180,7 @@ describe('server discovery', () => {
           'bad name': { type: 'http', url: 'https://managed.example/name' },
           command: { type: 'http', url: 'https://managed.example/command', command: 'node' },
           insecure: { type: 'http', url: 'http://managed.example/mcp' },
+          malformed: 'https://managed.example/mcp',
         },
       });
       const result = loadServers({ cwd: other.project, home: other.home, env: { TENANT: 'expanded' }, platform: 'linux', managedConfigDir: managedDir });
@@ -190,6 +191,7 @@ describe('server discovery', () => {
       expect(result.skipped.find((server) => server.name === 'bad name')?.reason).toContain('names may contain');
       expect(result.skipped.find((server) => server.name === 'command')?.reason).toContain('may not define command');
       expect(result.skipped.find((server) => server.name === 'insecure')?.reason).toContain('HTTPS URL');
+      expect(result.skipped.find((server) => server.name === 'malformed')?.reason).toContain('JSON objects');
     } finally {
       other.cleanup();
     }
